@@ -26,6 +26,9 @@ SAGA_CACHE_DIR="$HOME/.cache/saga"
 HYPR_CONFIG_DIR="$HOME/.config/hypr"
 HYPR_CONFIG_FILE="$HYPR_CONFIG_DIR/hyprland.conf"
 SAGA_HYPR_CONFIG_SOURCE="$REPO_ROOT/desktop/hypr/hyprland.conf"
+SWAYNC_CONFIG_DIR="$HOME/.config/swaync"
+SWAYNC_CONFIG_FILE="$SWAYNC_CONFIG_DIR/config.json"
+SAGA_SWAYNC_CONFIG_SOURCE="$REPO_ROOT/desktop/swaync/config.json"
 
 DISTRO=""
 PKG_MANAGER=""
@@ -43,6 +46,8 @@ REQUIRED_COMPONENTS=(
   "kitty|kitty"
   "swww|swww"
   "waybar|waybar"
+  "SwayNotificationCenter|swaync"
+  "libnotify|notify-send"
 )
 
 # Full package cleanup set for uninstall (Fedora stage).
@@ -59,7 +64,7 @@ UNINSTALL_PACKAGES=(
   waybar
   walker
   eww
-  swaynotificationcenter
+  SwayNotificationCenter
   swww
   hyprlock
   hypridle
@@ -183,119 +188,30 @@ install_packages() {
 }
 
 ###############################################################################
-# Hyprland config generation
+# Config install
 ###############################################################################
 
-# Write ~/.config/hypr/hyprland.conf directly from Saga's baseline source.
-write_base_hyprland_conf() {
-  local dest="$1"
-  cat > "$dest" <<'EOF'
-# Saga baseline Hyprland config
-# This file is intentionally minimal and fully controlled by Saga.
-
-monitor=,preferred,auto,1
-
-# App/command variables (edit commands here)
-$terminal_app = kitty
-$launcher_app = walker
-$control_center_app = saga panel toggle control_center
-$notifications_app = swaync-client -t
-$wifi_app = saga panel toggle wifi_menu
-$bluetooth_app = saga panel toggle bluetooth_menu
-$audio_app = saga panel toggle audio_menu
-$brightness_app = saga panel toggle brightness_menu
-$system_stats_app = saga panel toggle system_stats
-$power_app = saga panel toggle power_menu
-$file_search_app = saga launcher files
-
-exec-once=dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
-exec-once = swww-daemon
-exec-once = waybar
-
-input {
-    kb_layout = us
-}
-
-bind = SUPER, Q, killactive
-bind = SUPER, M, exit
-
-bind = SUPER, T, exec, $terminal_app
-bind = SUPER, SPACE, exec, $launcher_app
-bind = SUPER ALT, C, exec, $control_center_app
-bind = SUPER ALT, N, exec, $notifications_app
-bind = SUPER ALT, W, exec, $wifi_app
-bind = SUPER ALT, B, exec, $bluetooth_app
-bind = SUPER ALT, V, exec, $audio_app
-bind = SUPER ALT, L, exec, $brightness_app
-bind = SUPER ALT, I, exec, $system_stats_app
-bind = SUPER ALT, P, exec, $power_app
-bind = SUPER ALT, F, exec, $file_search_app
-
-misc {
-    disable_hyprland_qtutils_check = true
-}
-EOF
-}
-
 install_config() {
-  mkdir -p "$HYPR_CONFIG_DIR" "$SAGA_SHARE_DIR" "$SAGA_CACHE_DIR"
+  # Keep config behavior simple:
+  # copy tracked repo configs as-is into the user's config directory.
+  mkdir -p "$HYPR_CONFIG_DIR" "$SWAYNC_CONFIG_DIR" "$SAGA_SHARE_DIR" "$SAGA_CACHE_DIR"
   if [[ -f "$SAGA_HYPR_CONFIG_SOURCE" ]]; then
     cp "$SAGA_HYPR_CONFIG_SOURCE" "$HYPR_CONFIG_FILE"
   else
-    echo "[WARN] Missing Saga Hyprland baseline config: $SAGA_HYPR_CONFIG_SOURCE" >&2
-    echo "[INFO] Generating base Hyprland config directly at $HYPR_CONFIG_FILE"
-    write_base_hyprland_conf "$HYPR_CONFIG_FILE"
+    echo "[ERROR] Missing Saga Hyprland baseline config: $SAGA_HYPR_CONFIG_SOURCE" >&2
+    exit 1
   fi
 
   echo "[OK] Installed config: $HYPR_CONFIG_FILE"
-}
 
-# Ensure Fedora users do not see qtutils warning if package is intentionally absent.
-ensure_fedora_qtutils_check_disabled_in_file() {
-  local config_file="$1"
-  local tmp_file in_misc inserted
-
-  if [[ "$DISTRO" != "fedora" || -z "$config_file" ]]; then
-    return 0
-  fi
-
-  if [[ ! -f "$config_file" ]]; then
-    return 0
-  fi
-
-  if grep -Eq 'disable_hyprland_qtutils_check[[:space:]]*=[[:space:]]*true' "$config_file" 2>/dev/null; then
-    return 0
-  fi
-
-  if grep -Eq '^[[:space:]]*misc[[:space:]]*\{' "$config_file" 2>/dev/null; then
-    tmp_file="$(mktemp)"
-    in_misc=0
-    inserted=0
-    while IFS= read -r line; do
-      echo "$line" >> "$tmp_file"
-      if [[ "$line" =~ ^[[:space:]]*misc[[:space:]]*\{[[:space:]]*$ ]]; then
-        in_misc=1
-        continue
-      fi
-      if [[ "$in_misc" -eq 1 && "$line" =~ ^[[:space:]]*\}[[:space:]]*$ && "$inserted" -eq 0 ]]; then
-        sed -i '$d' "$tmp_file"
-        echo "    disable_hyprland_qtutils_check = true" >> "$tmp_file"
-        echo "}" >> "$tmp_file"
-        inserted=1
-        in_misc=0
-      fi
-    done < "$config_file"
-    mv "$tmp_file" "$config_file"
+  if [[ -f "$SAGA_SWAYNC_CONFIG_SOURCE" ]]; then
+    cp "$SAGA_SWAYNC_CONFIG_SOURCE" "$SWAYNC_CONFIG_FILE"
   else
-    {
-      echo
-      echo "misc {"
-      echo "    disable_hyprland_qtutils_check = true"
-      echo "}"
-    } >> "$config_file"
+    echo "[ERROR] Missing Saga swaync config: $SAGA_SWAYNC_CONFIG_SOURCE" >&2
+    exit 1
   fi
 
-  echo "[OK] Fedora qtutils warning disabled in: $config_file"
+  echo "[OK] Installed config: $SWAYNC_CONFIG_FILE"
 }
 
 ###############################################################################
@@ -334,9 +250,8 @@ install_stage_utilities() {
 install() {
   detect_distro
   detect_package_manager
-  install_packages
   install_config
-  ensure_fedora_qtutils_check_disabled_in_file "$HYPR_CONFIG_FILE"
+  install_packages
 
   # Reload active Hyprland session so updated binds/config take effect immediately.
   if command -v hyprctl >/dev/null 2>&1; then
@@ -384,13 +299,25 @@ doctor() {
     missing=1
   fi
 
-  if [[ "$DISTRO" == "fedora" && -f "$HYPR_CONFIG_FILE" ]]; then
-    if grep -Eq 'disable_hyprland_qtutils_check[[:space:]]*=[[:space:]]*true' "$HYPR_CONFIG_FILE"; then
-      echo "✓ fedora qtutils warning disabled in ~/.config/hypr/hyprland.conf"
-    else
-      echo "✗ fedora qtutils warning setting missing in ~/.config/hypr/hyprland.conf"
-      missing=1
-    fi
+  if grep -Eq '^[[:space:]]*exec-once[[:space:]]*=[[:space:]]*swaync([[:space:]]|$)' "$HYPR_CONFIG_FILE" 2>/dev/null; then
+    echo "✓ swaync autostart present in hyprland.conf"
+  else
+    echo "✗ swaync autostart missing in hyprland.conf"
+    missing=1
+  fi
+
+  if [[ -f "$SWAYNC_CONFIG_FILE" ]]; then
+    echo "✓ swaync config present ($SWAYNC_CONFIG_FILE)"
+  else
+    echo "✗ swaync config missing ($SWAYNC_CONFIG_FILE)"
+    missing=1
+  fi
+
+  if grep -Eq 'disable_hyprland_qtutils_check[[:space:]]*=[[:space:]]*true' "$HYPR_CONFIG_FILE" 2>/dev/null; then
+    echo "✓ qtutils warning disabled in hyprland.conf"
+  else
+    echo "✗ qtutils warning setting missing in hyprland.conf"
+    missing=1
   fi
 
   if [[ "$missing" -ne 0 ]]; then
