@@ -32,7 +32,7 @@ Saga consists of:
 The main user CLI (`install`, `update`, `doctor`, `theme`, `query`, `subscribe`, etc.)
 
 2. Desktop configs under `desktop/`
-Hyprland, Waybar, EWW, SwayNC, Walker
+Hyprland, Waybar, EWW, SwayNC, Wofi
 
 3. Theme engine under `themes/`
 `theme.json` + generated variables/styles
@@ -55,7 +55,7 @@ UI clients consume Saga daemon data from socket:
   - `~/.config/waybar -> <repo>/desktop/waybar`
   - `~/.config/swaync -> <repo>/desktop/swaync`
   - `~/.config/eww -> <repo>/desktop/eww`
-  - `~/.config/walker -> <repo>/desktop/walker`
+  - `~/.config/wofi -> <repo>/desktop/wofi`
 
 ### Package groups
 
@@ -64,7 +64,7 @@ Saga installs missing packages (via distro package manager) from `packages/*.txt
 Core desktop:
 - hyprland
 - waybar
-- walker
+- wofi
 - swaynotificationcenter
 - networkmanager
 - pipewire
@@ -72,7 +72,7 @@ Core desktop:
 - kitty
 - hyprlock
 - hypridle
-- swww
+- mpvpaper
 - eww
 - xdg-desktop-portal-hyprland
 - bluez
@@ -168,7 +168,7 @@ Theme apply regenerates:
 - `themes/<theme>/variables.scss`
 - `desktop/waybar/style.css`
 - `desktop/eww/eww.scss`
-- `desktop/walker/style.css`
+- `desktop/wofi/style.css`
 - `desktop/hypr/theme.conf`
 
 Then it reloads UI components where available.
@@ -217,10 +217,31 @@ saga doctor
 
 Doctor checks:
 - Hyprland command availability
-- `kitty`, `swww`, `waybar` command availability
+- `kitty`, `mpvpaper`, `waybar` command availability
 - `~/.config/hypr/hyprland.conf` exists
 - terminal bind exists in Hypr config
 - Fedora `disable_hyprland_qtutils_check = true` is present
+
+## Video wallpaper (mpvpaper)
+
+Saga now uses `mpvpaper` for wallpaper so MP4 playback is supported.
+On Fedora, `mpvpaper` may come from a COPR repo depending on your setup.
+
+Default video path:
+- `~/.local/share/saga/wallpapers/default.mp4`
+
+Hyprland startup command in `desktop/hypr/hyprland.conf`:
+- kills old `mpvpaper` instance
+- starts `mpvpaper` loop with no audio if the file exists
+
+Quick setup:
+
+```bash
+mkdir -p ~/.local/share/saga/wallpapers
+cp /path/to/your/video.mp4 ~/.local/share/saga/wallpapers/default.mp4
+./cli/saga install
+hyprctl reload
+```
 
 Common issues:
 
@@ -256,7 +277,7 @@ bash -n cli/saga
 
 - `cli/` CLI entrypoint
 - `config/` centralized static config (shortcuts)
-- `desktop/` Hyprland/Waybar/EWW/SwayNC/Walker config
+- `desktop/` Hyprland/Waybar/EWW/SwayNC/Wofi config
 - `sagas/` optional module installs
 - `scripts/` installers, generators, stream helpers
 - `themes/` theme definitions and style templates

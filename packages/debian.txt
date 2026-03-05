@@ -1,7 +1,7 @@
 # Core desktop
 Hyprland|hyprland
 waybar|waybar
-walker|walker
+wofi|wofi
 swaync-client,swaync|swaynotificationcenter,sway-notification-center
 nmcli|network-manager
 pipewire|pipewire
@@ -9,7 +9,7 @@ wireplumber|wireplumber
 kitty|kitty
 hyprlock|hyprlock
 hypridle|hypridle
-swww|swww
+mpvpaper|mpvpaper
 eww|eww
 xdg-desktop-portal-hyprland|xdg-desktop-portal-hyprland
 bluetoothctl|bluez

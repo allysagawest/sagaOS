@@ -49,7 +49,7 @@ REQUIRED_COMPONENTS=(
   # "grim|grim"
   # "slurp|slurp"
   "kitty|kitty"
-  "swww|swww"
+  "mpvpaper|mpvpaper"
   "waybar|waybar"
   "SwayNotificationCenter|swaync"
   "libnotify|notify-send"
@@ -72,7 +72,7 @@ UNINSTALL_PACKAGES=(
   wofi
   eww
   SwayNotificationCenter
-  swww
+  mpvpaper
   hyprlock
   hypridle
 )
