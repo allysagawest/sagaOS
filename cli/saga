@@ -37,7 +37,11 @@ SAGA_RUNTIME_CLI="$SAGA_SHARE_DIR/bin/saga"
 SAGA_APPLY_THEME_SCRIPT="$REPO_ROOT/cli/theme/apply_theme.sh"
 HYPR_CONFIG_DIR="$HOME/.config/hypr"
 HYPR_CONFIG_FILE="$HYPR_CONFIG_DIR/hyprland.conf"
+HYPRIDLE_CONFIG_FILE="$HYPR_CONFIG_DIR/hypridle.conf"
+HYPRLOCK_CONFIG_FILE="$HYPR_CONFIG_DIR/hyprlock.conf"
 SAGA_HYPR_CONFIG_SOURCE="$REPO_ROOT/desktop/hypr/hyprland.conf"
+SAGA_HYPRIDLE_CONFIG_SOURCE="$REPO_ROOT/desktop/hypr/hypridle.conf"
+SAGA_HYPRLOCK_CONFIG_SOURCE="$REPO_ROOT/desktop/hypr/hyprlock.conf"
 SWAYNC_CONFIG_DIR="$HOME/.config/swaync"
 SWAYNC_CONFIG_FILE="$SWAYNC_CONFIG_DIR/config.json"
 SAGA_SWAYNC_CONFIG_SOURCE="$REPO_ROOT/desktop/swaync/config.json"
@@ -67,6 +71,10 @@ REQUIRED_COMPONENTS=(
   "SwayNotificationCenter|swaync"
   "libnotify|notify-send"
   "wofi|wofi"
+  "hyprlock|hyprlock"
+  "hypridle|hypridle"
+  "brightnessctl|brightnessctl"
+  "bluez|bluetoothctl"
 )
 
 # Full package cleanup set for uninstall (Fedora stage).
@@ -87,6 +95,8 @@ UNINSTALL_PACKAGES=(
   mpvpaper
   hyprlock
   hypridle
+  brightnessctl
+  bluez
 )
 
 usage() {
@@ -277,6 +287,20 @@ install_config() {
 
   echo "[OK] Installed config: $HYPR_CONFIG_FILE"
 
+  if [[ -f "$SAGA_HYPRIDLE_CONFIG_SOURCE" ]]; then
+    cp "$SAGA_HYPRIDLE_CONFIG_SOURCE" "$HYPRIDLE_CONFIG_FILE"
+    echo "[OK] Installed config: $HYPRIDLE_CONFIG_FILE"
+  else
+    echo "[WARN] Missing Saga hypridle config: $SAGA_HYPRIDLE_CONFIG_SOURCE"
+  fi
+
+  if [[ -f "$SAGA_HYPRLOCK_CONFIG_SOURCE" ]]; then
+    cp "$SAGA_HYPRLOCK_CONFIG_SOURCE" "$HYPRLOCK_CONFIG_FILE"
+    echo "[OK] Installed config: $HYPRLOCK_CONFIG_FILE"
+  else
+    echo "[WARN] Missing Saga hyprlock config: $SAGA_HYPRLOCK_CONFIG_SOURCE"
+  fi
+
   if [[ -f "$SAGA_SWAYNC_CONFIG_SOURCE" ]]; then
     cp "$SAGA_SWAYNC_CONFIG_SOURCE" "$SWAYNC_CONFIG_FILE"
   else
@@ -380,6 +404,20 @@ doctor() {
     echo "✓ hypr config present ($HYPR_CONFIG_FILE)"
   else
     echo "✗ hypr config missing ($HYPR_CONFIG_FILE)"
+    missing=1
+  fi
+
+  if [[ -f "$HYPRIDLE_CONFIG_FILE" ]]; then
+    echo "✓ hypridle config present ($HYPRIDLE_CONFIG_FILE)"
+  else
+    echo "✗ hypridle config missing ($HYPRIDLE_CONFIG_FILE)"
+    missing=1
+  fi
+
+  if [[ -f "$HYPRLOCK_CONFIG_FILE" ]]; then
+    echo "✓ hyprlock config present ($HYPRLOCK_CONFIG_FILE)"
+  else
+    echo "✗ hyprlock config missing ($HYPRLOCK_CONFIG_FILE)"
     missing=1
   fi
 
