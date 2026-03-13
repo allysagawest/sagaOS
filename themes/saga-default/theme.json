@@ -22,7 +22,7 @@
     "lg": 16
   },
   "ui": {
-    "radius": 8,
+    "radius": 0,
     "border_size": 1,
     "blur": 0
   },
