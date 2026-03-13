@@ -3,514 +3,35 @@ set -euo pipefail
 
 if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
   echo "[ERROR] Do not run Saga as root." >&2
-  echo "[INFO] Run as your user: ./cli/saga install" >&2
-  echo "[INFO] Saga will request sudo only for package installs when needed." >&2
   exit 1
 fi
 
-###############################################################################
-# Saga Minimal Installer (Fedora-first)
-# - Installs baseline Hyprland stack in controlled stages.
-# - Copies Saga's baseline Hypr config directly into ~/.config/hypr/hyprland.conf.
-# - Keeps uninstall targeted to Saga-related files/packages.
-###############################################################################
-
-# Resolve repository root robustly:
-# - handles direct execution: ./cli/saga
-# - handles symlinked execution: ~/.local/bin/saga -> <repo>/cli/saga
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 if command -v readlink >/dev/null 2>&1; then
   SCRIPT_PATH="$(readlink -f "$SCRIPT_PATH" 2>/dev/null || echo "$SCRIPT_PATH")"
 fi
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 REPO_ROOT="${SAGA_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-# Fallback for ad-hoc runs where current directory is the repo root.
+
 if [[ ! -f "$REPO_ROOT/desktop/hypr/hyprland.conf" && -f "$PWD/desktop/hypr/hyprland.conf" ]]; then
   REPO_ROOT="$PWD"
 fi
-SAGA_SHARE_DIR="$HOME/.local/share/saga"
-SAGA_CACHE_DIR="$HOME/.cache/saga"
-SAGA_CONFIG_DIR="$HOME/.config/saga"
-SAGA_THEMES_DIR="$SAGA_CONFIG_DIR/themes"
-SAGA_WIDGETS_DIR="$SAGA_CONFIG_DIR/widgets"
-SAGA_RUNTIME_CLI="$SAGA_SHARE_DIR/bin/saga"
+
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/saga-installer.sh"
+saga_init "$REPO_ROOT"
+
 SAGA_APPLY_THEME_SCRIPT="$REPO_ROOT/cli/theme/apply_theme.sh"
-HYPR_CONFIG_DIR="$HOME/.config/hypr"
-HYPR_CONFIG_FILE="$HYPR_CONFIG_DIR/hyprland.conf"
-HYPRIDLE_CONFIG_FILE="$HYPR_CONFIG_DIR/hypridle.conf"
-HYPRLOCK_CONFIG_FILE="$HYPR_CONFIG_DIR/hyprlock.conf"
-SAGA_HYPR_CONFIG_SOURCE="$REPO_ROOT/desktop/hypr/hyprland.conf"
-SAGA_HYPRIDLE_CONFIG_SOURCE="$REPO_ROOT/desktop/hypr/hypridle.conf"
-SAGA_HYPRLOCK_CONFIG_SOURCE="$REPO_ROOT/desktop/hypr/hyprlock.conf"
-SWAYNC_CONFIG_DIR="$HOME/.config/swaync"
-SWAYNC_CONFIG_FILE="$SWAYNC_CONFIG_DIR/config.json"
-SAGA_SWAYNC_CONFIG_SOURCE="$REPO_ROOT/desktop/swaync/config.json"
-WOFI_CONFIG_DIR="$HOME/.config/wofi"
-WOFI_CONFIG_FILE="$WOFI_CONFIG_DIR/config"
-WOFI_STYLE_FILE="$WOFI_CONFIG_DIR/style.css"
-SAGA_WOFI_CONFIG_SOURCE="$REPO_ROOT/desktop/wofi/config"
-SAGA_WOFI_STYLE_SOURCE="$REPO_ROOT/desktop/wofi/style.css"
-
-DISTRO=""
-PKG_MANAGER=""
-APT_UPDATED=0
-
-# Package/runtime checks are represented as: package_name|command_name.
-REQUIRED_COMPONENTS=(
-  "hyprland|Hyprland"
-  # Future baseline additions (disabled for now):
-  # "pipewire|pipewire"
-  # "wireplumber|wireplumber"
-  # "xdg-desktop-portal-hyprland|xdg-desktop-portal-hyprland"
-  # "wl-clipboard|wl-copy"
-  # "grim|grim"
-  # "slurp|slurp"
-  "kitty|kitty"
-  "mpvpaper|mpvpaper"
-  "waybar|waybar"
-  "SwayNotificationCenter|swaync"
-  "libnotify|notify-send"
-  "wofi|wofi"
-  "hyprlock|hyprlock"
-  "hypridle|hypridle"
-  "brightnessctl|brightnessctl"
-  "bluez|bluetoothctl"
-  "sddm|sddm"
-)
-
-# Full package cleanup set for uninstall (Fedora stage).
-# Keep this broader than the active install set so uninstall can clean older Saga attempts too.
-UNINSTALL_PACKAGES=(
-  hyprland
-  pipewire
-  wireplumber
-  xdg-desktop-portal-hyprland
-  wl-clipboard
-  grim
-  slurp
-  kitty
-  waybar
-  walker
-  wofi
-  SwayNotificationCenter
-  mpvpaper
-  hyprlock
-  hypridle
-  brightnessctl
-  bluez
-  sddm
-)
 
 usage() {
-  cat <<USAGE
+  cat <<'USAGE'
 Usage:
-  ./cli/saga install
+  ./cli/saga install [--dry-run]
+  ./cli/saga dry-run [install|uninstall]
   ./cli/saga theme <name>
-  ./cli/saga uninstall
+  ./cli/saga uninstall [--dry-run]
   ./cli/saga doctor
 USAGE
-}
-
-###############################################################################
-# Platform detection
-###############################################################################
-
-# Detect supported distro from /etc/os-release.
-detect_distro() {
-  if [[ ! -r /etc/os-release ]]; then
-    echo "[ERROR] Cannot detect distro: /etc/os-release not found" >&2
-    exit 1
-  fi
-
-  # shellcheck disable=SC1091
-  source /etc/os-release
-  DISTRO="${ID:-unknown}"
-
-  case "$DISTRO" in
-    fedora|arch|ubuntu|debian)
-      ;;
-    *)
-      echo "[ERROR] Unsupported distro: $DISTRO" >&2
-      echo "[INFO] Currently supported: fedora, arch, ubuntu, debian" >&2
-      exit 1
-      ;;
-  esac
-}
-
-# Resolve package manager for current distro.
-detect_package_manager() {
-  case "$DISTRO" in
-    fedora)
-      PKG_MANAGER="dnf"
-      ;;
-    arch)
-      PKG_MANAGER="pacman"
-      ;;
-    ubuntu|debian)
-      PKG_MANAGER="apt"
-      ;;
-    *)
-      echo "[ERROR] No package manager mapping for distro: $DISTRO" >&2
-      exit 1
-      ;;
-  esac
-
-  if ! command -v "$PKG_MANAGER" >/dev/null 2>&1; then
-    echo "[ERROR] Package manager '$PKG_MANAGER' not found" >&2
-    exit 1
-  fi
-}
-
-###############################################################################
-# Package install helpers
-###############################################################################
-
-# Return success if package is already installed.
-is_package_installed() {
-  local pkg="$1"
-  case "$PKG_MANAGER" in
-    dnf)
-      rpm -q "$pkg" >/dev/null 2>&1
-      ;;
-    pacman)
-      pacman -Q "$pkg" >/dev/null 2>&1
-      ;;
-    apt)
-      dpkg -s "$pkg" >/dev/null 2>&1
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-# Install a package safely:
-# - skip if package metadata is unavailable
-# - warn on unknown package manager
-install_pkg() {
-  local pkg="$1"
-  local dnf_rc
-
-  case "$PKG_MANAGER" in
-    dnf)
-      echo "[CHECKING] $pkg availability in repos..."
-      # Repo metadata checks can appear to hang on slow mirrors.
-      # Use a timeout and clear status lines so users see progress.
-      if timeout 45 dnf -q info "$pkg" >/dev/null 2>&1; then
-        echo "[INSTALLING] $pkg"
-        sudo dnf install -y "$pkg"
-      else
-        dnf_rc=$?
-        if [[ "$dnf_rc" -eq 124 ]]; then
-          echo "[WARN] $pkg availability check timed out (45s), trying direct install..."
-          echo "[INSTALLING] $pkg"
-          sudo dnf install -y "$pkg" || true
-        else
-          echo "[SKIP] $pkg not available"
-        fi
-      fi
-      ;;
-    pacman)
-      echo "[CHECKING] $pkg availability in repos..."
-      if timeout 45 pacman -Si "$pkg" >/dev/null 2>&1; then
-        echo "[INSTALLING] $pkg"
-        sudo pacman -S --needed --noconfirm "$pkg"
-      else
-        echo "[SKIP] $pkg not available"
-      fi
-      ;;
-    apt)
-      echo "[CHECKING] $pkg availability in repos..."
-      if [[ "$APT_UPDATED" -eq 0 ]]; then
-        echo "[INFO] refreshing apt package index..."
-        sudo apt update >/dev/null
-        APT_UPDATED=1
-      fi
-      if apt-cache show "$pkg" 2>/dev/null | grep -q '^Package:'; then
-        echo "[INSTALLING] $pkg"
-        sudo apt install -y "$pkg"
-      else
-        echo "[SKIP] $pkg not available"
-      fi
-      ;;
-    *)
-      echo "[WARN] Unknown package manager"
-      ;;
-  esac
-}
-
-# Idempotent install of one package.
-install_single_package() {
-  local pkg="$1"
-
-  if is_package_installed "$pkg"; then
-    echo "[OK] $pkg"
-    return 0
-  fi
-
-  install_pkg "$pkg"
-  if is_package_installed "$pkg"; then
-    echo "[OK] $pkg"
-  else
-    echo "[SKIP] $pkg not installed"
-  fi
-}
-
-# Install all active required packages.
-install_packages() {
-  local item pkg
-  local idx=0
-  local total="${#REQUIRED_COMPONENTS[@]}"
-  for item in "${REQUIRED_COMPONENTS[@]}"; do
-    idx=$((idx + 1))
-    pkg="${item%%|*}"
-    echo "[STEP $idx/$total] Resolving package: $pkg"
-    install_single_package "$pkg"
-  done
-}
-
-###############################################################################
-# Greeter (SDDM)
-###############################################################################
-
-# Install and enable SDDM with a Hyprland session entry.
-# Note: This stage writes system files under /usr and /etc because display
-# managers are system-level services.
-configure_sddm() {
-  local sddm_dir="/usr/share/wayland-sessions"
-  local sddm_session="$sddm_dir/hyprland.desktop"
-
-  if ! command -v systemctl >/dev/null 2>&1; then
-    echo "[WARN] systemctl not found; skipping SDDM enablement"
-    return 0
-  fi
-
-  echo "[INFO] Configuring SDDM for Hyprland session..."
-  sudo mkdir -p "$sddm_dir"
-
-  # Session entry visible in SDDM session picker.
-  sudo tee "$sddm_session" >/dev/null <<'EOF'
-[Desktop Entry]
-Name=Hyprland
-Comment=Hyprland Wayland Compositor
-Exec=Hyprland
-Type=Application
-DesktopNames=Hyprland
-EOF
-
-  sudo systemctl enable sddm >/dev/null
-  echo "[OK] SDDM enabled. Select 'Hyprland' at login."
-}
-
-###############################################################################
-# Config install
-###############################################################################
-
-install_config() {
-  # Keep config behavior simple:
-  # copy tracked repo configs as-is into the user's config directory.
-  mkdir -p "$HYPR_CONFIG_DIR" "$SWAYNC_CONFIG_DIR" "$WOFI_CONFIG_DIR" "$SAGA_SHARE_DIR" "$SAGA_CACHE_DIR"
-  mkdir -p "$SAGA_SHARE_DIR/bin"
-  ln -sfn "$REPO_ROOT/cli/saga" "$SAGA_RUNTIME_CLI"
-  chmod +x "$REPO_ROOT/cli/saga" || true
-  if [[ -f "$SAGA_HYPR_CONFIG_SOURCE" ]]; then
-    cp "$SAGA_HYPR_CONFIG_SOURCE" "$HYPR_CONFIG_FILE"
-  else
-    echo "[ERROR] Missing Saga Hyprland baseline config: $SAGA_HYPR_CONFIG_SOURCE" >&2
-    exit 1
-  fi
-
-  echo "[OK] Installed config: $HYPR_CONFIG_FILE"
-
-  if [[ -f "$SAGA_HYPRIDLE_CONFIG_SOURCE" ]]; then
-    cp "$SAGA_HYPRIDLE_CONFIG_SOURCE" "$HYPRIDLE_CONFIG_FILE"
-    echo "[OK] Installed config: $HYPRIDLE_CONFIG_FILE"
-  else
-    echo "[WARN] Missing Saga hypridle config: $SAGA_HYPRIDLE_CONFIG_SOURCE"
-  fi
-
-  if [[ -f "$SAGA_HYPRLOCK_CONFIG_SOURCE" ]]; then
-    cp "$SAGA_HYPRLOCK_CONFIG_SOURCE" "$HYPRLOCK_CONFIG_FILE"
-    echo "[OK] Installed config: $HYPRLOCK_CONFIG_FILE"
-  else
-    echo "[WARN] Missing Saga hyprlock config: $SAGA_HYPRLOCK_CONFIG_SOURCE"
-  fi
-
-  if [[ -f "$SAGA_SWAYNC_CONFIG_SOURCE" ]]; then
-    cp "$SAGA_SWAYNC_CONFIG_SOURCE" "$SWAYNC_CONFIG_FILE"
-  else
-    echo "[ERROR] Missing Saga swaync config: $SAGA_SWAYNC_CONFIG_SOURCE" >&2
-    exit 1
-  fi
-
-  echo "[OK] Installed config: $SWAYNC_CONFIG_FILE"
-
-  if [[ -f "$SAGA_WOFI_CONFIG_SOURCE" ]]; then
-    cp "$SAGA_WOFI_CONFIG_SOURCE" "$WOFI_CONFIG_FILE"
-  else
-    echo "[ERROR] Missing Saga wofi config: $SAGA_WOFI_CONFIG_SOURCE" >&2
-    exit 1
-  fi
-
-  if [[ -f "$SAGA_WOFI_STYLE_SOURCE" ]]; then
-    cp "$SAGA_WOFI_STYLE_SOURCE" "$WOFI_STYLE_FILE"
-  else
-    echo "[ERROR] Missing Saga wofi style: $SAGA_WOFI_STYLE_SOURCE" >&2
-    exit 1
-  fi
-
-  echo "[OK] Installed config: $WOFI_CONFIG_FILE"
-  echo "[OK] Installed config: $WOFI_STYLE_FILE"
-}
-
-###############################################################################
-# Future stage placeholders
-###############################################################################
-
-install_stage_bar() {
-  # Placeholder for future stage: waybar install/config
-  :
-}
-
-install_stage_notifications() {
-  # Placeholder for future stage: swaync install/config
-  :
-}
-
-install_stage_launcher() {
-  # Placeholder for future stage: launcher install/config
-  :
-}
-
-install_stage_widgets() {
-  # Placeholder for future stage: widget engine install/config
-  :
-}
-
-install_stage_utilities() {
-  # Placeholder for future stage: extra desktop utilities
-  :
-}
-
-###############################################################################
-# Top-level commands
-###############################################################################
-
-install() {
-  detect_distro
-  detect_package_manager
-  install_config
-  install_packages
-  configure_sddm
-  apply_theme "default"
-
-  # Reload active Hyprland session so updated binds/config take effect immediately.
-  if command -v hyprctl >/dev/null 2>&1; then
-    hyprctl reload >/dev/null 2>&1 || true
-  fi
-
-  # Future staged installers (intentionally disabled)
-  # install_stage_bar
-  # install_stage_notifications
-  # install_stage_launcher
-  # install_stage_widgets
-  # install_stage_utilities
-
-  echo "Saga install complete"
-}
-
-doctor() {
-  local item label cmd missing=0
-
-  detect_distro
-
-  for item in "${REQUIRED_COMPONENTS[@]}"; do
-    label="${item%%|*}"
-    cmd="${item##*|}"
-
-    if command -v "$cmd" >/dev/null 2>&1; then
-      echo "✓ $label installed"
-    else
-      echo "✗ $label missing"
-      missing=1
-    fi
-  done
-
-  if [[ -f "$HYPR_CONFIG_FILE" ]]; then
-    echo "✓ hypr config present ($HYPR_CONFIG_FILE)"
-  else
-    echo "✗ hypr config missing ($HYPR_CONFIG_FILE)"
-    missing=1
-  fi
-
-  if [[ -f "$HYPRIDLE_CONFIG_FILE" ]]; then
-    echo "✓ hypridle config present ($HYPRIDLE_CONFIG_FILE)"
-  else
-    echo "✗ hypridle config missing ($HYPRIDLE_CONFIG_FILE)"
-    missing=1
-  fi
-
-  if [[ -f "$HYPRLOCK_CONFIG_FILE" ]]; then
-    echo "✓ hyprlock config present ($HYPRLOCK_CONFIG_FILE)"
-  else
-    echo "✗ hyprlock config missing ($HYPRLOCK_CONFIG_FILE)"
-    missing=1
-  fi
-
-  if grep -Eq '^[[:space:]]*bind[[:space:]]*=.*\bT\b.*exec,[[:space:]]*(\$terminal_app|kitty)\b' "$HYPR_CONFIG_FILE" 2>/dev/null; then
-    echo "✓ terminal bind present in hyprland.conf"
-  else
-    echo "✗ terminal bind missing in hyprland.conf"
-    missing=1
-  fi
-
-  if grep -Eq '^[[:space:]]*exec-once[[:space:]]*=[[:space:]]*swaync([[:space:]]|$)' "$HYPR_CONFIG_FILE" 2>/dev/null; then
-    echo "✓ swaync autostart present in hyprland.conf"
-  else
-    echo "✗ swaync autostart missing in hyprland.conf"
-    missing=1
-  fi
-
-  if [[ -f "$SWAYNC_CONFIG_FILE" ]]; then
-    echo "✓ swaync config present ($SWAYNC_CONFIG_FILE)"
-  else
-    echo "✗ swaync config missing ($SWAYNC_CONFIG_FILE)"
-    missing=1
-  fi
-
-  if [[ -f "$WOFI_CONFIG_FILE" && -f "$WOFI_STYLE_FILE" ]]; then
-    echo "✓ wofi config present ($WOFI_CONFIG_DIR)"
-  else
-    echo "✗ wofi config missing ($WOFI_CONFIG_DIR)"
-    missing=1
-  fi
-
-  if grep -Eq 'disable_hyprland_qtutils_check[[:space:]]*=[[:space:]]*true' "$HYPR_CONFIG_FILE" 2>/dev/null; then
-    echo "✓ qtutils warning disabled in hyprland.conf"
-  else
-    echo "✗ qtutils warning setting missing in hyprland.conf"
-    missing=1
-  fi
-
-  if command -v systemctl >/dev/null 2>&1; then
-    if systemctl is-enabled sddm >/dev/null 2>&1; then
-      echo "✓ sddm service enabled"
-    else
-      echo "✗ sddm service not enabled"
-      missing=1
-    fi
-  fi
-
-  if [[ -f "/usr/share/wayland-sessions/hyprland.desktop" ]]; then
-    echo "✓ sddm Hyprland session entry present"
-  else
-    echo "✗ sddm Hyprland session entry missing"
-    missing=1
-  fi
-
-  if [[ "$missing" -ne 0 ]]; then
-    return 1
-  fi
 }
 
 apply_theme() {
@@ -522,124 +43,66 @@ apply_theme() {
   "$SAGA_APPLY_THEME_SCRIPT" "$REPO_ROOT" "$theme_name"
 }
 
-uninstall() {
-  local target confirm
-  local targets=(
-    "$HOME/.config/hypr"
-    "$HOME/.config/waybar"
-    "$HOME/.config/walker"
-    "$HOME/.config/wofi"
-    "$HOME/.config/swaync"
-    "$HOME/.config/saga"
-    "$HOME/.local/share/saga"
-    "$HOME/.cache/saga"
-    "$HOME/.local/bin/saga"
-  )
-  local pkg
-  local to_remove=()
-
-  detect_distro
-  detect_package_manager
-
-  for pkg in "${UNINSTALL_PACKAGES[@]}"; do
-    if is_package_installed "$pkg"; then
-      to_remove+=("$pkg")
-    fi
-  done
-
-  echo "Saga will remove the following paths:"
-  echo
-  for target in "${targets[@]}"; do
-    echo "$target"
-  done
-  echo
-  if [[ "${#to_remove[@]}" -gt 0 ]]; then
-    echo "Saga will also uninstall these system packages:"
-    echo
-    for pkg in "${to_remove[@]}"; do
-      echo "$pkg"
-    done
-    echo
+install() {
+  saga_install_flow
+  if [[ "$SAGA_DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] Would apply theme: default"
   else
-    echo "No Saga-related system packages detected for removal."
-    echo
+    apply_theme "default"
   fi
-  read -r -p "Continue? (y/n) " confirm
 
-  case "$confirm" in
-    y|Y)
-      if command -v systemctl >/dev/null 2>&1; then
-        sudo systemctl disable sddm >/dev/null 2>&1 || true
-      fi
-      sudo rm -f /usr/share/wayland-sessions/hyprland.desktop
+  if command -v hyprctl >/dev/null 2>&1 && [[ "$SAGA_DRY_RUN" -eq 0 ]]; then
+    hyprctl reload >/dev/null 2>&1 || true
+  fi
 
-      if [[ "${#to_remove[@]}" -gt 0 ]]; then
-        echo "Removing Saga system packages..."
-        case "$PKG_MANAGER" in
-          dnf)
-            if sudo dnf remove -y "${to_remove[@]}" >/dev/null; then
-              for pkg in "${to_remove[@]}"; do
-                echo "✓ $pkg uninstalled"
-              done
-            else
-              echo "[ERROR] Failed to uninstall one or more packages" >&2
-              exit 1
-            fi
-            ;;
-          pacman)
-            if sudo pacman -Rns --noconfirm "${to_remove[@]}" >/dev/null; then
-              for pkg in "${to_remove[@]}"; do
-                echo "✓ $pkg uninstalled"
-              done
-            else
-              echo "[ERROR] Failed to uninstall one or more packages" >&2
-              exit 1
-            fi
-            ;;
-          apt)
-            sudo apt update >/dev/null || true
-            if sudo apt remove -y "${to_remove[@]}" >/dev/null; then
-              for pkg in "${to_remove[@]}"; do
-                echo "✓ $pkg uninstalled"
-              done
-            else
-              echo "[ERROR] Failed to uninstall one or more packages" >&2
-              exit 1
-            fi
-            ;;
-          *)
-            echo "[ERROR] Unsupported package manager for uninstall: $PKG_MANAGER" >&2
-            exit 1
-            ;;
-        esac
-      fi
-
-      echo "Removing Saga configs..."
-      for target in "${targets[@]}"; do
-        if [[ -e "$target" ]]; then
-          rm -rf "$target"
-        fi
-        echo "✓ $target removed"
-      done
-      echo "Saga uninstall complete"
-      ;;
-    *)
-      echo "Uninstall cancelled"
-      ;;
-  esac
+  echo "Saga install complete"
 }
 
-# CLI entrypoint.
+uninstall() {
+  saga_uninstall_flow
+  echo "Saga uninstall complete"
+}
+
+doctor() {
+  saga_doctor
+}
+
 main() {
-  case "${1:-}" in
+  local command="${1:-}"
+
+  case "$command" in
     install)
       shift || true
+      if [[ "${1:-}" == "--dry-run" ]]; then
+        SAGA_DRY_RUN=1
+      fi
       install
+      ;;
+    dry-run)
+      shift || true
+      SAGA_DRY_RUN=1
+      case "${1:-install}" in
+        install)
+          install
+          ;;
+        uninstall)
+          uninstall
+          ;;
+        *)
+          echo "[ERROR] Unknown dry-run target: ${1:-}" >&2
+          usage
+          exit 1
+          ;;
+      esac
       ;;
     theme)
       apply_theme "${2:-default}"
       ;;
     uninstall)
+      shift || true
+      if [[ "${1:-}" == "--dry-run" ]]; then
+        SAGA_DRY_RUN=1
+      fi
       uninstall
       ;;
     doctor)
@@ -649,7 +112,7 @@ main() {
       usage
       ;;
     *)
-      echo "[ERROR] Unknown command: $1" >&2
+      echo "[ERROR] Unknown command: $command" >&2
       usage
       exit 1
       ;;
