@@ -5,11 +5,11 @@ import unittest
 from cli.calendar.stack import (
     CalendarConnection,
     _build_vdirsyncer_google_oauth_error,
+    _parse_discovered_remote_collections,
     _render_khal_config,
     _normalize_role,
     _render_vdirsyncer_config,
-    finalize_caldav_connection,
-    finalize_google_connection,
+    discover_remote_collections,
 )
 
 
@@ -101,7 +101,30 @@ class VdirsyncerConfigTests(unittest.TestCase):
         self.assertIn("aiohttp OAuth dependency", message)
         self.assertIn("sudo dnf install python3-aiohttp-oauthlib", message)
 
-    def test_finalize_google_connection_discovers_without_syncing(self) -> None:
+    def test_parse_discovered_remote_collections_reads_remote_section(self) -> None:
+        connection = CalendarConnection(
+            kind="google",
+            name="Bryce",
+            slug="bryce",
+            path="/tmp/bryce",
+            role="secondary",
+        )
+        output = (
+            "Discovering collections for pair bryce\n"
+            "bryce_remote:\n"
+            '  - "ally@fitbryceadams.com"\n'
+            '  - "brian-archived@fitbryceadams.com" ("Brian@FitBryceAdams.com")\n'
+            "bryce_local:\n"
+        )
+
+        collections = _parse_discovered_remote_collections(output, connection)
+
+        self.assertEqual(
+            collections,
+            ["ally@fitbryceadams.com", "brian-archived@fitbryceadams.com"],
+        )
+
+    def test_discover_remote_collections_uses_vdirsyncer_list_mode(self) -> None:
         from unittest.mock import patch
 
         connection = CalendarConnection(
@@ -118,36 +141,25 @@ class VdirsyncerConfigTests(unittest.TestCase):
         with (
             patch("cli.calendar.stack.ensure_binary"),
             patch("cli.calendar.stack.ensure_vdirsyncer_ready"),
-            patch("cli.calendar.stack._run_command") as run_command,
+            patch("cli.calendar.stack.render_calendar_stack"),
+            patch("cli.calendar.stack.load_connections", return_value=[connection]),
+            patch("cli.calendar.stack.subprocess.run") as run_command,
         ):
-            message = finalize_google_connection(connection)
+            run_command.return_value.returncode = 0
+            run_command.return_value.stdout = (
+                "Discovering collections for pair bryce\n"
+                "bryce_remote:\n"
+                '  - "ally@fitbryceadams.com"\n'
+            )
+            run_command.return_value.stderr = ""
+            collections = discover_remote_collections(connection)
 
-        self.assertEqual(message, "Google calendars discovered.")
-        run_command.assert_called_once_with(["vdirsyncer", "discover", "bryce"], capture_output=False)
-
-    def test_finalize_caldav_connection_discovers_without_syncing(self) -> None:
-        from unittest.mock import patch
-
-        connection = CalendarConnection(
-            kind="caldav",
-            name="Work",
-            slug="work",
-            path="/tmp/work",
-            role="secondary",
-            url="https://example.com/caldav",
-            username="ally",
-            password="secret",
+        self.assertEqual(collections, ["ally@fitbryceadams.com"])
+        run_command.assert_called_once()
+        self.assertEqual(
+            run_command.call_args.args[0],
+            ["vdirsyncer", "discover", "--list", "bryce"],
         )
-
-        with (
-            patch("cli.calendar.stack.ensure_binary"),
-            patch("cli.calendar.stack.ensure_vdirsyncer_ready"),
-            patch("cli.calendar.stack._run_command") as run_command,
-        ):
-            message = finalize_caldav_connection(connection)
-
-        self.assertEqual(message, "CalDAV calendars discovered.")
-        run_command.assert_called_once_with(["vdirsyncer", "discover", "work"], capture_output=False)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from cli.runtime import _compute_next_meeting, upcoming_events
 
 
 class ReadAgendaTests(unittest.TestCase):
-    @patch("cli.calendar.stack.get_main_calendar_name")
+    @patch("cli.calendar.stack.get_main_calendar_names")
     @patch("cli.calendar.stack.ensure_binary")
     @patch("cli.calendar.stack.ensure_khal_ready")
     @patch("cli.calendar.stack._run_command")
@@ -19,9 +19,9 @@ class ReadAgendaTests(unittest.TestCase):
         run_command,
         _ensure_khal_ready,
         _ensure_binary,
-        get_main_calendar_name,
+        get_main_calendar_names,
     ) -> None:
-        get_main_calendar_name.return_value = "main"
+        get_main_calendar_names.return_value = ["main"]
         run_command.return_value = subprocess.CompletedProcess(
             args=[],
             returncode=0,
@@ -55,7 +55,7 @@ class ReadAgendaTests(unittest.TestCase):
             ],
         )
 
-    @patch("cli.calendar.stack.get_main_calendar_name")
+    @patch("cli.calendar.stack.get_main_calendar_names")
     @patch("cli.calendar.stack.ensure_binary")
     @patch("cli.calendar.stack.ensure_khal_ready")
     @patch("cli.calendar.stack._run_command")
@@ -64,9 +64,9 @@ class ReadAgendaTests(unittest.TestCase):
         run_command,
         _ensure_khal_ready,
         _ensure_binary,
-        get_main_calendar_name,
+        get_main_calendar_names,
     ) -> None:
-        get_main_calendar_name.return_value = None
+        get_main_calendar_names.return_value = []
         run_command.return_value = subprocess.CompletedProcess(
             args=[],
             returncode=0,

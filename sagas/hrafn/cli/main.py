@@ -16,20 +16,19 @@ from cli.calendar.stack import (
     GOOGLE_CREDENTIALS_URL,
     GOOGLE_DATA_ACCESS_URL,
     GOOGLE_SYNCSELECT_URL,
-    create_event,
     cleanup_calendar_mirrors,
-    finalize_caldav_connection,
-    finalize_google_connection,
+    create_event,
+    discover_remote_collections,
     get_main_calendar_name,
     has_khal_config,
     has_vdirsyncer_config,
     list_calendars,
-    list_discovered_collections,
     read_agenda,
     run_vdirsyncer_sync,
     setup_caldav_calendar,
     setup_google_calendar,
     setup_local_calendar,
+    sync_connection,
     update_connection_selection,
 )
 from cli.config import load_theme
@@ -136,12 +135,11 @@ def _connect_caldav_calendar() -> CalendarConnection:
     username = typer.prompt("Username").strip()
     password = typer.prompt("Password or app password", hide_input=True).strip()
     connection = setup_caldav_calendar(name=name, url=url, username=username, password=password)
-    typer.echo(_colorize("Wrote khal and vdirsyncer config. Discovering calendars now.", "sync_status"))
-    output = finalize_caldav_connection(connection)
-    typer.echo(_colorize(output, "sync_status"))
-    updated = _select_account_calendar(connection)
+    typer.echo(_colorize("Wrote khal and vdirsyncer config. Discovering remote calendars now.", "sync_status"))
+    collections = discover_remote_collections(connection)
+    updated = _select_account_calendar(connection, collections)
     typer.echo(_colorize("Syncing the selected calendar now.", "sync_status"))
-    typer.echo(_colorize(run_vdirsyncer_sync(), "sync_status"))
+    typer.echo(_colorize(sync_connection(updated), "sync_status"))
     return updated
 
 
@@ -205,12 +203,11 @@ def _connect_google_calendar() -> CalendarConnection:
         client_id=client_id,
         client_secret=client_secret,
     )
-    typer.echo(_colorize("Wrote khal and vdirsyncer config. Starting Google authorization now.", "sync_status"))
-    output = finalize_google_connection(connection)
-    typer.echo(_colorize(output, "sync_status"))
-    updated = _select_account_calendar(connection)
+    typer.echo(_colorize("Wrote khal and vdirsyncer config. Starting Google authorization and listing calendars now.", "sync_status"))
+    collections = discover_remote_collections(connection)
+    updated = _select_account_calendar(connection, collections)
     typer.echo(_colorize("Syncing the selected calendar now.", "sync_status"))
-    typer.echo(_colorize(run_vdirsyncer_sync(), "sync_status"))
+    typer.echo(_colorize(sync_connection(updated), "sync_status"))
     return updated
 
 
@@ -268,8 +265,7 @@ def _prompt_account_collections(connection: CalendarConnection, collections: lis
         typer.echo(_colorize(f"Selected '{candidate}'.", "sync_status"))
 
 
-def _select_account_calendar(connection: CalendarConnection) -> CalendarConnection:
-    collections = list_discovered_collections(connection)
+def _select_account_calendar(connection: CalendarConnection, collections: list[str]) -> CalendarConnection:
     if not collections:
         if connection.kind == "google":
             raise CalendarStackError(

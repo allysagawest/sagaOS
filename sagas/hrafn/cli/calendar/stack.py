@@ -97,6 +97,14 @@ def run_vdirsyncer_sync() -> str:
     return "\n".join(line for line in lines if line)
 
 
+def sync_connection(connection: CalendarConnection) -> str:
+    ensure_binary("vdirsyncer")
+    ensure_vdirsyncer_ready()
+    render_calendar_stack(load_connections())
+    result = _run_command(["vdirsyncer", "sync", connection.slug], capture_output=False)
+    return (result.stdout or result.stderr).strip() or f"Synchronized {connection.slug}."
+
+
 def list_calendars() -> list[str]:
     ensure_binary("khal")
     ensure_khal_ready()
@@ -264,7 +272,7 @@ def finalize_caldav_connection(connection: CalendarConnection) -> str:
     ensure_binary("vdirsyncer")
     ensure_binary("khal")
     ensure_vdirsyncer_ready()
-    _run_command(["vdirsyncer", "discover", connection.slug], capture_output=False)
+    discover_remote_collections(connection)
     return "CalDAV calendars discovered."
 
 
@@ -272,8 +280,29 @@ def finalize_google_connection(connection: CalendarConnection) -> str:
     ensure_binary("vdirsyncer")
     ensure_binary("khal")
     ensure_vdirsyncer_ready()
-    _run_command(["vdirsyncer", "discover", connection.slug], capture_output=False)
+    discover_remote_collections(connection)
     return "Google calendars discovered."
+
+
+def discover_remote_collections(connection: CalendarConnection) -> list[str]:
+    ensure_binary("vdirsyncer")
+    ensure_binary("khal")
+    ensure_vdirsyncer_ready()
+    render_calendar_stack(load_connections())
+
+    result = subprocess.run(
+        ["vdirsyncer", "discover", "--list", connection.slug],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    output = "\n".join(part for part in [result.stdout, result.stderr] if part).strip()
+    collections = _parse_discovered_remote_collections(output, connection)
+    if collections:
+        return collections
+    if result.returncode != 0:
+        raise CalendarStackError(_format_command_error(["vdirsyncer", "discover", "--list", connection.slug], output))
+    return []
 
 
 def list_discovered_collections(connection: CalendarConnection) -> list[str]:
@@ -351,6 +380,8 @@ def update_connection_selection(
     connections = _upsert_connection(connections, updated)
     save_connections(connections)
     render_calendar_stack(connections)
+    for collection in deduped_collections:
+        (Path(connection.path) / collection).mkdir(parents=True, exist_ok=True)
     return updated
 
 
@@ -667,6 +698,28 @@ def _parse_khal_json_output(output: str | None) -> list[object]:
             continue
         events.append(payload)
     return events
+
+
+def _parse_discovered_remote_collections(output: str, connection: CalendarConnection) -> list[str]:
+    header = f"{connection.slug}_remote:"
+    in_section = False
+    collections: list[str] = []
+
+    for raw_line in output.splitlines():
+        line = raw_line.rstrip()
+        if line == header:
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if not line.startswith("  - "):
+            if line and not line.startswith("Saved for "):
+                break
+            continue
+        match = re.match(r'\s*-\s+"([^"]+)"', line)
+        if match:
+            collections.append(match.group(1))
+    return collections
 
 
 def _coerce_string(value: object, default: str) -> str:
