@@ -10,7 +10,7 @@ fi
 source /etc/os-release
 
 case "${ID:-}" in
-  arch)
+  arch|endeavouros)
     echo "arch pacman"
     ;;
   fedora)
