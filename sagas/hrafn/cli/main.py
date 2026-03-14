@@ -23,12 +23,14 @@ from cli.calendar.stack import (
     has_khal_config,
     has_vdirsyncer_config,
     list_calendars,
+    load_connections,
     read_agenda,
     run_vdirsyncer_sync,
     setup_caldav_calendar,
     setup_google_calendar,
     setup_local_calendar,
     sync_connection,
+    update_connection_sync_window,
     update_connection_selection,
 )
 from cli.config import load_theme
@@ -214,16 +216,18 @@ def _connect_google_calendar() -> CalendarConnection:
 def _prompt_connection_role() -> str:
     typer.echo("Choose how Hrafn should treat this calendar:", err=True)
     typer.echo("1. Main calendar (default writable calendar for new events)", err=True)
-    typer.echo("2. Secondary calendar (mirrors into main, receives busy from main)", err=True)
-    choice = typer.prompt("Select 1 or 2", default="2", show_default=True).strip()
+    typer.echo("2. Source calendar (read-only detail source; no busy blocks pushed back)", err=True)
+    typer.echo("3. Secondary calendar (writable mirror target; receives busy from main)", err=True)
+    choice = typer.prompt("Select 1, 2, or 3", default="2", show_default=True).strip()
     return {
         "1": "main",
-        "2": "secondary",
+        "2": "source",
+        "3": "secondary",
     }.get(choice) or (_raise_invalid_role())
 
 
 def _raise_invalid_role() -> str:
-    raise CalendarStackError("Invalid choice. Select 1 for main or 2 for secondary.")
+    raise CalendarStackError("Invalid choice. Select 1 for main, 2 for source, or 3 for secondary.")
 
 
 def _prompt_account_collections(connection: CalendarConnection, collections: list[str]) -> list[str]:
@@ -335,6 +339,81 @@ def sync() -> None:
         raise typer.Exit(code=1) from exc
 
     typer.echo(_colorize(output, "sync_status"))
+
+
+@app.command("set-role")
+def set_role(
+    slug: Annotated[str, typer.Argument(help="Connection slug, for example 'google_secondary'.")],
+    role: Annotated[
+        str,
+        typer.Option("--role", help="New role: main, source, or secondary."),
+    ],
+    cleanup: Annotated[
+        bool,
+        typer.Option("--cleanup/--no-cleanup", help="Remove Hrafn-generated mirrors after the role change."),
+    ] = True,
+) -> None:
+    """Change an existing connection role without reconnecting."""
+    try:
+        connection = next((item for item in load_connections() if item.slug == slug), None)
+        if connection is None:
+            raise CalendarStackError(f"No Hrafn calendar connection found for slug '{slug}'.")
+        if not connection.selected_collections:
+            raise CalendarStackError(
+                f"Connection '{slug}' has no selected calendars. Reconnect it before changing roles."
+            )
+
+        updated = update_connection_selection(
+            connection,
+            selected_collections=connection.selected_collections,
+            role=role.strip().lower(),
+        )
+        typer.echo(
+            _colorize(
+                f"Connection '{updated.slug}' role updated to '{updated.role}'.",
+                "sync_status",
+            )
+        )
+        if cleanup:
+            typer.echo(_colorize(cleanup_calendar_mirrors(), "sync_status"))
+    except CalendarStackError as exc:
+        _print_calendar_error(exc)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command("set-sync-window")
+def set_sync_window(
+    slug: Annotated[str, typer.Argument(help="Connection slug, for example 'new_valley_labs'.")],
+    past_days: Annotated[
+        int | None,
+        typer.Option("--past-days", min=0, help="How many days back to sync."),
+    ] = None,
+    future_days: Annotated[
+        int | None,
+        typer.Option("--future-days", min=0, help="How many days forward to sync."),
+    ] = None,
+) -> None:
+    """Change how far back and forward a sync-backed calendar should sync."""
+    try:
+        connection = next((item for item in load_connections() if item.slug == slug), None)
+        if connection is None:
+            raise CalendarStackError(f"No Hrafn calendar connection found for slug '{slug}'.")
+        if connection.kind not in {"google", "caldav"}:
+            raise CalendarStackError(f"Connection '{slug}' is local-only and does not use a sync window.")
+        if past_days is None and future_days is None:
+            raise CalendarStackError("Provide at least one of '--past-days' or '--future-days'.")
+
+        updated = update_connection_sync_window(connection, past_days=past_days, future_days=future_days)
+    except CalendarStackError as exc:
+        _print_calendar_error(exc)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(
+        _colorize(
+            f"Connection '{updated.slug}' sync window: past_days={updated.sync_past_days} future_days={updated.sync_future_days}",
+            "sync_status",
+        )
+    )
 
 
 @app.command("cleanup-mirrors")

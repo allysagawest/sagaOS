@@ -65,7 +65,8 @@ class CalendarConnection:
     slug: str
     path: str
     role: str = "secondary"
-    sync_from_today: bool = False
+    sync_past_days: int | None = None
+    sync_future_days: int | None = None
     selected_collections: list[str] | None = None
     url: str | None = None
     username: str | None = None
@@ -86,8 +87,14 @@ def ensure_binary(name: str) -> None:
 def run_vdirsyncer_sync() -> str:
     ensure_binary("vdirsyncer")
     ensure_vdirsyncer_ready()
-    render_calendar_stack(load_connections())
+    connections = load_connections()
+    render_calendar_stack(connections)
     sync_result = _run_command(["vdirsyncer", "sync"])
+    mirror_state = _load_mirror_state()
+    if mirror_state.get("pending_cleanup"):
+        _save_mirror_state(created=0, updated=0, removed=int(mirror_state.get("removed", 0)), pending_cleanup=False)
+        return (sync_result.stdout or sync_result.stderr).strip() or "vdirsyncer sync completed."
+
     mirror_summary = reconcile_calendar_mirrors()
     push_result = _run_command(["vdirsyncer", "sync"])
     lines = [(sync_result.stdout or sync_result.stderr).strip() or "vdirsyncer sync completed."]
@@ -184,6 +191,8 @@ def setup_local_calendar(name: str) -> CalendarConnection:
         slug=slug,
         path=str(_calendar_root() / "local" / slug),
         role="main",
+        sync_past_days=None,
+        sync_future_days=None,
         selected_collections=[slug],
     )
     Path(connection.path).mkdir(parents=True, exist_ok=True)
@@ -218,7 +227,8 @@ def setup_caldav_calendar(
         slug=slug,
         path=str(_calendar_root() / slug),
         role="secondary",
-        sync_from_today=False,
+        sync_past_days=7,
+        sync_future_days=3650,
         url=url.strip(),
         username=username.strip(),
         password=password,
@@ -255,7 +265,8 @@ def setup_google_calendar(
         slug=slug,
         path=str(_calendar_root() / slug),
         role="secondary",
-        sync_from_today=True,
+        sync_past_days=7,
+        sync_future_days=3650,
         client_id=client_id.strip(),
         client_secret=client_secret.strip(),
         token_file=str(token_file),
@@ -323,8 +334,8 @@ def update_connection_selection(
     role: str,
 ) -> CalendarConnection:
     normalized_role = _normalize_role(role)
-    if normalized_role not in {"main", "secondary"}:
-        raise CalendarStackError("Connection role must be 'main' or 'secondary'.")
+    if normalized_role not in {"main", "secondary", "source"}:
+        raise CalendarStackError("Connection role must be 'main', 'secondary', or 'source'.")
 
     if isinstance(selected_collections, str):
         normalized_collections = [selected_collections]
@@ -347,7 +358,8 @@ def update_connection_selection(
         slug=connection.slug,
         path=connection.path,
         role=normalized_role,
-        sync_from_today=connection.sync_from_today,
+        sync_past_days=connection.sync_past_days,
+        sync_future_days=connection.sync_future_days,
         selected_collections=deduped_collections,
         url=connection.url,
         username=connection.username,
@@ -366,7 +378,8 @@ def update_connection_selection(
                 slug=item.slug,
                 path=item.path,
                 role="secondary" if item.role in {"master", "main"} and item.slug != updated.slug else item.role,
-                sync_from_today=item.sync_from_today,
+                sync_past_days=item.sync_past_days,
+                sync_future_days=item.sync_future_days,
                 selected_collections=item.selected_collections,
                 url=item.url,
                 username=item.username,
@@ -382,6 +395,34 @@ def update_connection_selection(
     render_calendar_stack(connections)
     for collection in deduped_collections:
         (Path(connection.path) / collection).mkdir(parents=True, exist_ok=True)
+    return updated
+
+
+def update_connection_sync_window(
+    connection: CalendarConnection,
+    *,
+    past_days: int | None = None,
+    future_days: int | None = None,
+) -> CalendarConnection:
+    updated = CalendarConnection(
+        kind=connection.kind,
+        name=connection.name,
+        slug=connection.slug,
+        path=connection.path,
+        role=connection.role,
+        sync_past_days=connection.sync_past_days if past_days is None else max(0, past_days),
+        sync_future_days=connection.sync_future_days if future_days is None else max(0, future_days),
+        selected_collections=connection.selected_collections,
+        url=connection.url,
+        username=connection.username,
+        password=connection.password,
+        client_id=connection.client_id,
+        client_secret=connection.client_secret,
+        token_file=connection.token_file,
+    )
+    connections = _upsert_connection(load_connections(), updated)
+    save_connections(connections)
+    render_calendar_stack(connections)
     return updated
 
 
@@ -439,7 +480,8 @@ def load_connections() -> list[CalendarConnection]:
                     slug=str(item["slug"]),
                     path=str(item["path"]),
                     role=_normalize_role(item.get("role")),
-                    sync_from_today=bool(item.get("sync_from_today", False)),
+                    sync_past_days=_load_sync_past_days(item),
+                    sync_future_days=_load_sync_future_days(item),
                     selected_collections=_load_selected_collections(item.get("selected_collections")),
                     url=str(item["url"]) if item.get("url") else None,
                     username=str(item["username"]) if item.get("username") else None,
@@ -487,8 +529,9 @@ def render_calendar_stack(connections: list[CalendarConnection]) -> None:
 def reconcile_calendar_mirrors() -> str:
     connections = load_connections()
     main_connection = next((connection for connection in connections if connection.role == "main"), None)
-    secondary_connections = [connection for connection in connections if connection.role == "secondary"]
-    if main_connection is None or not secondary_connections:
+    detail_sources = [connection for connection in connections if connection.role in {"secondary", "source"}]
+    writable_secondaries = [connection for connection in connections if connection.role == "secondary"]
+    if main_connection is None or not detail_sources:
         return ""
 
     main_dir = _selected_collection_path(main_connection)
@@ -504,7 +547,7 @@ def reconcile_calendar_mirrors() -> str:
     main_native_files = _list_native_ics_files(main_dir)
     expected_secondary_paths: dict[str, set[Path]] = {}
 
-    for secondary in secondary_connections:
+    for secondary in detail_sources:
         expected_secondary_paths[secondary.slug] = set()
         for secondary_dir in _selected_collection_paths(secondary):
             secondary_dir.mkdir(parents=True, exist_ok=True)
@@ -524,23 +567,24 @@ def reconcile_calendar_mirrors() -> str:
                     else:
                         created += 1
 
-            for source_file in main_native_files:
-                target_file = secondary_dir / _mirror_filename("busy", main_connection.slug, source_file)
-                expected_secondary_paths[secondary.slug].add(target_file)
-                changed, existed = _write_mirror_file(
-                    source_file=source_file,
-                    target_file=target_file,
-                    target_kind="busy",
-                    source_connection=main_connection,
-                )
-                if changed:
-                    if existed:
-                        updated += 1
-                    else:
-                        created += 1
+            if secondary.role == "secondary":
+                for source_file in main_native_files:
+                    target_file = secondary_dir / _mirror_filename("busy", main_connection.slug, source_file)
+                    expected_secondary_paths[secondary.slug].add(target_file)
+                    changed, existed = _write_mirror_file(
+                        source_file=source_file,
+                        target_file=target_file,
+                        target_kind="busy",
+                        source_connection=main_connection,
+                    )
+                    if changed:
+                        if existed:
+                            updated += 1
+                        else:
+                            created += 1
 
     removed += _prune_stale_mirror_files(main_dir, expected_main_paths, kind="detail")
-    for secondary in secondary_connections:
+    for secondary in detail_sources:
         for secondary_dir in _selected_collection_paths(secondary):
             removed += _prune_stale_mirror_files(
                 secondary_dir,
@@ -558,16 +602,21 @@ def cleanup_calendar_mirrors() -> str:
         for collection_dir in _selected_collection_paths(connection):
             if not collection_dir.exists():
                 continue
-            for candidate in collection_dir.glob("hrafn-*.ics"):
+            for candidate in collection_dir.glob("*.ics"):
                 if not candidate.is_file():
                     continue
                 if not _is_hrafn_generated_ics(candidate):
                     continue
                 candidate.unlink()
                 removed += 1
-    _save_mirror_state(created=0, updated=0, removed=removed)
+    _save_mirror_state(created=0, updated=0, removed=removed, pending_cleanup=True)
     _prune_stale_vdirsyncer_status(load_connections())
-    return f"Removed {removed} Hrafn-generated mirror file(s). Run 'hrafn sync' once after cleanup to push the deletions."
+    sync_result = _run_command(["vdirsyncer", "sync"])
+    return (
+        f"Removed {removed} Hrafn-generated mirror file(s). "
+        f"Deletion sync completed. The next 'hrafn sync' will skip mirror regeneration once.\n"
+        f"{(sync_result.stdout or sync_result.stderr).strip() or 'vdirsyncer sync completed.'}"
+    )
 
 
 def _run_command(
@@ -594,6 +643,9 @@ def _format_command_error(args: Sequence[str], stderr: str) -> str:
         href = _extract_vdirsyncer_missing_href(stderr)
         if href:
             return _build_vdirsyncer_missing_href_error(href, stderr)
+        forbidden = _extract_vdirsyncer_forbidden_href(stderr)
+        if forbidden:
+            return _build_vdirsyncer_forbidden_href_error(forbidden, stderr)
     return stderr
 
 
@@ -606,6 +658,13 @@ def _extract_vdirsyncer_missing_href(stderr: str) -> str | None:
     if match:
         return match.group("href")
 
+    return None
+
+
+def _extract_vdirsyncer_forbidden_href(stderr: str) -> str | None:
+    match = re.search(r"403, message='Forbidden', url='(?P<href>https://[^']+)'", stderr)
+    if match:
+        return match.group("href")
     return None
 
 
@@ -636,6 +695,20 @@ def _build_vdirsyncer_missing_href_error(href: str, stderr: str) -> str:
                 f"Remediation: inspect or remove the remote event backing '{filename}', then run sync again."
             )
 
+    return "\n".join(lines)
+
+
+def _build_vdirsyncer_forbidden_href_error(href: str, stderr: str) -> str:
+    decoded_href = unquote(href)
+    lines = [
+        stderr,
+        "",
+        "Hrafn diagnosis: Google rejected a write to the selected calendar with 403 Forbidden.",
+        f"Rejected remote target: {decoded_href}",
+        "This usually means the calendar is visible to the account but is not writable.",
+        "Remediation: reconnect or reclassify that calendar as a 'source' calendar instead of 'secondary'.",
+        "A 'source' calendar still syncs in and mirrors detail into main, but Hrafn will stop pushing Busy blocks back to it.",
+    ]
     return "\n".join(lines)
 
 
@@ -1025,7 +1098,17 @@ def _unescape_ics_text(value: str) -> str:
     )
 
 
-def _save_mirror_state(*, created: int, updated: int, removed: int) -> None:
+def _load_mirror_state() -> dict[str, object]:
+    paths = get_paths()
+    if not paths.calendar_mirror_state_file.exists():
+        return {}
+    try:
+        return json.loads(paths.calendar_mirror_state_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _save_mirror_state(*, created: int, updated: int, removed: int, pending_cleanup: bool = False) -> None:
     paths = get_paths()
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -1033,6 +1116,7 @@ def _save_mirror_state(*, created: int, updated: int, removed: int) -> None:
         "created": created,
         "updated": updated,
         "removed": removed,
+        "pending_cleanup": pending_cleanup,
     }
     paths.calendar_mirror_state_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -1168,11 +1252,13 @@ def _render_vdirsyncer_config(connections: list[CalendarConnection]) -> str:
 
 
 def _render_sync_window_lines(connection: CalendarConnection) -> list[str]:
-    if not connection.sync_from_today:
+    if connection.sync_past_days is None and connection.sync_future_days is None:
         return []
+    past_days = max(0, connection.sync_past_days or 0)
+    future_days = max(0, connection.sync_future_days or 0)
     return [
-        'start_date = "date.today()"',
-        'end_date = "date.today() + timedelta(days=3650)"',
+        f'start_date = "date.today() - timedelta(days={past_days})"',
+        f'end_date = "date.today() + timedelta(days={future_days})"',
     ]
 
 
@@ -1249,10 +1335,30 @@ def _load_selected_collections(value: object) -> list[str] | None:
     return collections or None
 
 
+def _load_sync_past_days(item: dict[str, object]) -> int | None:
+    legacy = item.get("sync_from_today")
+    if isinstance(legacy, bool):
+        return 7 if legacy else None
+    value = item.get("sync_past_days")
+    if isinstance(value, int):
+        return max(0, value)
+    return None
+
+
+def _load_sync_future_days(item: dict[str, object]) -> int | None:
+    legacy = item.get("sync_from_today")
+    if isinstance(legacy, bool):
+        return 3650 if legacy else None
+    value = item.get("sync_future_days")
+    if isinstance(value, int):
+        return max(0, value)
+    return None
+
+
 def _normalize_role(value: object) -> str:
     role = str(value or "secondary")
     if role == "master":
         return "main"
-    if role in {"source", "busy_target"}:
-        return "secondary"
+    if role == "busy_target":
+        return "source"
     return role

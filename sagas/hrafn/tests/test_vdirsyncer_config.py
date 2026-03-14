@@ -7,7 +7,9 @@ from unittest.mock import patch
 
 from cli.calendar.stack import (
     CalendarConnection,
+    _build_vdirsyncer_forbidden_href_error,
     _build_vdirsyncer_google_oauth_error,
+    _load_sync_past_days,
     _parse_discovered_remote_collections,
     _prune_stale_vdirsyncer_status,
     _render_khal_config,
@@ -51,6 +53,8 @@ class VdirsyncerConfigTests(unittest.TestCase):
                         "alex.carson.440@gmail.com",
                         "family10799977565623715725@group.calendar.google.com",
                     ],
+                    sync_past_days=7,
+                    sync_future_days=3650,
                     client_id="client-id",
                     client_secret="client-secret",
                     token_file="/tmp/token.json",
@@ -62,6 +66,7 @@ class VdirsyncerConfigTests(unittest.TestCase):
             'collections = ["alex.carson.440@gmail.com", "family10799977565623715725@group.calendar.google.com"]',
             config,
         )
+        self.assertIn('start_date = "date.today() - timedelta(days=7)"', config)
 
     def test_selected_collections_render_as_multiple_khal_calendars(self) -> None:
         config = _render_khal_config(
@@ -92,9 +97,18 @@ class VdirsyncerConfigTests(unittest.TestCase):
         )
 
     def test_legacy_roles_normalize_to_supported_values(self) -> None:
-        self.assertEqual(_normalize_role("source"), "secondary")
-        self.assertEqual(_normalize_role("busy_target"), "secondary")
+        self.assertEqual(_normalize_role("source"), "source")
+        self.assertEqual(_normalize_role("busy_target"), "source")
         self.assertEqual(_normalize_role("master"), "main")
+
+    def test_forbidden_google_write_error_explains_source_role(self) -> None:
+        message = _build_vdirsyncer_forbidden_href_error(
+            "https://apidata.googleusercontent.com/caldav/v2/alex.carson.440@gmail.com/events/hrafn-busy-google_personal-abc.ics",
+            "403, message='Forbidden'",
+        )
+
+        self.assertIn("403 Forbidden", message)
+        self.assertIn("source", message)
 
     def test_google_oauth_error_includes_install_guidance(self) -> None:
         from unittest.mock import patch
@@ -190,6 +204,9 @@ class VdirsyncerConfigTests(unittest.TestCase):
 
             self.assertFalse(stale.exists())
             self.assertTrue(keep.exists())
+
+    def test_legacy_sync_from_today_migrates_to_past_week(self) -> None:
+        self.assertEqual(_load_sync_past_days({"sync_from_today": True}), 7)
 
 
 if __name__ == "__main__":

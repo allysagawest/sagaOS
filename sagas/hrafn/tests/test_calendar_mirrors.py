@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cli.calendar.stack import CalendarConnection, _render_mirror_ics
+from unittest.mock import patch
+
+from cli.calendar.stack import CalendarConnection, _render_mirror_ics, cleanup_calendar_mirrors, reconcile_calendar_mirrors
 
 
 DETAIL_SOURCE = """BEGIN:VCALENDAR
@@ -84,6 +86,73 @@ class CalendarMirrorTests(unittest.TestCase):
         self.assertNotIn("DESCRIPTION:S", rendered)
         self.assertNotIn("LOCATION:Office", rendered)
         self.assertIn("X-HRAFN-MIRROR-KIND:busy", rendered)
+
+    def test_source_role_mirrors_detail_without_creating_busy_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_dir = root / "main" / "primary"
+            source_dir = root / "source" / "alex@example.com"
+            main_dir.mkdir(parents=True)
+            source_dir.mkdir(parents=True)
+            (main_dir / "main.ics").write_text(BUSY_SOURCE, encoding="utf-8")
+            (source_dir / "source.ics").write_text(DETAIL_SOURCE, encoding="utf-8")
+
+            main = CalendarConnection(
+                kind="google",
+                name="Main",
+                slug="main",
+                path=str(root / "main"),
+                role="main",
+                selected_collections=["primary"],
+            )
+            source = CalendarConnection(
+                kind="google",
+                name="Source",
+                slug="source",
+                path=str(root / "source"),
+                role="source",
+                selected_collections=["alex@example.com"],
+            )
+
+            with patch("cli.calendar.stack.load_connections", return_value=[main, source]):
+                reconcile_calendar_mirrors()
+
+            self.assertTrue(any(path.name.startswith("hrafn-detail-") for path in main_dir.glob("*.ics")))
+            self.assertFalse(any(path.name.startswith("hrafn-busy-") for path in source_dir.glob("*.ics")))
+
+    def test_cleanup_removes_all_hrafn_managed_files_even_without_hrafn_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            collection_dir = root / "main" / "primary"
+            collection_dir.mkdir(parents=True)
+            managed = collection_dir / "random-export-name.ics"
+            native = collection_dir / "native-event.ics"
+            managed.write_text(
+                "BEGIN:VCALENDAR\nBEGIN:VEVENT\nX-HRAFN-MANAGED-MIRROR:TRUE\nEND:VEVENT\nEND:VCALENDAR\n",
+                encoding="utf-8",
+            )
+            native.write_text(BUSY_SOURCE, encoding="utf-8")
+
+            main = CalendarConnection(
+                kind="google",
+                name="Main",
+                slug="main",
+                path=str(root / "main"),
+                role="main",
+                selected_collections=["primary"],
+            )
+
+            with (
+                patch("cli.calendar.stack.load_connections", return_value=[main]),
+                patch("cli.calendar.stack._run_command") as run_command,
+            ):
+                run_command.return_value.stdout = "ok"
+                run_command.return_value.stderr = ""
+                message = cleanup_calendar_mirrors()
+
+            self.assertIn("Removed 1", message)
+            self.assertFalse(managed.exists())
+            self.assertTrue(native.exists())
 
 
 if __name__ == "__main__":

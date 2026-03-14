@@ -50,9 +50,9 @@ hrafn signals
 - includes an in-CLI Google setup walkthrough for creating a user-owned Desktop OAuth client
 - runs `vdirsyncer discover` and `vdirsyncer sync` for sync-backed connections
 - if multiple remote calendars are discovered for an account, Hrafn asks which single calendar should be pinned for that account
-- supports one main calendar and unlimited secondary calendars
-- mirrors full-detail secondary events into the main calendar, prefixing the title with the source calendar name
-- mirrors main-calendar events back into each secondary as `Busy` blocks
+- supports one main calendar, unlimited read-only source calendars, and unlimited writable secondary calendars
+- mirrors full-detail source and secondary events into the main calendar, prefixing the title with the source calendar name
+- mirrors main-calendar events back only into writable secondary calendars as `Busy` blocks
 
 `hrafn dashboard`
 
@@ -117,8 +117,9 @@ Google OAuth flow.
 When a sync-backed account is connected, Hrafn asks how to classify the chosen
 calendar:
 
-- `main`: the default writable calendar for `hrafn new-event`; its native events are mirrored to secondaries as `Busy`
-- `secondary`: a writable calendar whose native events are mirrored into the main calendar with full details
+- `main`: the default writable calendar for `hrafn new-event`; its native events are mirrored to writable secondaries as `Busy`
+- `source`: a read-only calendar whose native events are mirrored into the main calendar with full details; Hrafn never pushes `Busy` blocks back to it
+- `secondary`: a writable calendar whose native events are mirrored into the main calendar with full details and which also receives `Busy` blocks from the main calendar
 
 If a mirror run goes wrong, `hrafn cleanup-mirrors` removes every Hrafn-generated
 mirror `.ics` file from the local stores so the next `hrafn sync` can propagate
