@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from cli.calendar.stack import (
     CalendarConnection,
     _build_vdirsyncer_google_oauth_error,
     _parse_discovered_remote_collections,
+    _prune_stale_vdirsyncer_status,
     _render_khal_config,
     _normalize_role,
     _render_vdirsyncer_config,
@@ -125,8 +129,6 @@ class VdirsyncerConfigTests(unittest.TestCase):
         )
 
     def test_discover_remote_collections_uses_vdirsyncer_list_mode(self) -> None:
-        from unittest.mock import patch
-
         connection = CalendarConnection(
             kind="google",
             name="Bryce",
@@ -160,6 +162,34 @@ class VdirsyncerConfigTests(unittest.TestCase):
             run_command.call_args.args[0],
             ["vdirsyncer", "discover", "--list", "bryce"],
         )
+
+    def test_prune_stale_vdirsyncer_status_removes_unselected_item_state(self) -> None:
+        connection = CalendarConnection(
+            kind="google",
+            name="Secondary",
+            slug="google_secondary",
+            path="/tmp/google_secondary",
+            role="secondary",
+            selected_collections=["alex.carson.440@gmail.com"],
+            client_id="client-id",
+            client_secret="client-secret",
+            token_file="/tmp/token.json",
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            status_root = Path(temp_dir)
+            pair_dir = status_root / "google_secondary"
+            pair_dir.mkdir(parents=True)
+            stale = pair_dir / "alex.carson.440@gmail.com (mailto:alex.carson.440@gmail.com).items"
+            keep = pair_dir / "alex.carson.440@gmail.com.items"
+            stale.write_text("stale", encoding="utf-8")
+            keep.write_text("keep", encoding="utf-8")
+
+            with patch("cli.calendar.stack._vdirsyncer_status_root", return_value=status_root):
+                _prune_stale_vdirsyncer_status([connection])
+
+            self.assertFalse(stale.exists())
+            self.assertTrue(keep.exists())
 
 
 if __name__ == "__main__":

@@ -479,6 +479,7 @@ def render_calendar_stack(connections: list[CalendarConnection]) -> None:
     if sync_connections:
         vdirsyncer_path.parent.mkdir(parents=True, exist_ok=True)
         vdirsyncer_path.write_text(_render_vdirsyncer_config(sync_connections), encoding="utf-8")
+        _prune_stale_vdirsyncer_status(sync_connections)
     elif vdirsyncer_path.exists() and _is_hrafn_managed(vdirsyncer_path, VDIRSYNCER_MARKER):
         vdirsyncer_path.unlink()
 
@@ -565,6 +566,7 @@ def cleanup_calendar_mirrors() -> str:
                 candidate.unlink()
                 removed += 1
     _save_mirror_state(created=0, updated=0, removed=removed)
+    _prune_stale_vdirsyncer_status(load_connections())
     return f"Removed {removed} Hrafn-generated mirror file(s). Run 'hrafn sync' once after cleanup to push the deletions."
 
 
@@ -1211,6 +1213,29 @@ def _vdirsyncer_config_path() -> Path:
 
 def _vdirsyncer_status_root() -> Path:
     return Path.home() / ".local" / "share" / "vdirsyncer" / "status"
+
+
+def _prune_stale_vdirsyncer_status(connections: list[CalendarConnection]) -> None:
+    status_root = _vdirsyncer_status_root()
+    expected_slugs = {connection.slug for connection in connections if connection.kind in {"caldav", "google"}}
+
+    for collections_file in status_root.glob("*.collections"):
+        if collections_file.stem not in expected_slugs:
+            collections_file.unlink(missing_ok=True)
+
+    for pair_dir in status_root.iterdir() if status_root.exists() else []:
+        if not pair_dir.is_dir():
+            continue
+        connection = next((item for item in connections if item.slug == pair_dir.name), None)
+        if connection is None:
+            shutil.rmtree(pair_dir, ignore_errors=True)
+            continue
+        selected = set(connection.selected_collections or [])
+        if not selected:
+            continue
+        for items_file in pair_dir.glob("*.items"):
+            if items_file.stem not in selected:
+                items_file.unlink(missing_ok=True)
 
 
 def _token_root() -> Path:
